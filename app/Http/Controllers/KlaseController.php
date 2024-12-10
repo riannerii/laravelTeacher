@@ -6,19 +6,22 @@ use App\Models\Klase;
 use App\Models\Admin;
 use App\Models\Grade;
 use App\Models\Announcement;
+use App\Models\Message;
 use Illuminate\Support\Facades\Hash;
 use App\Http\Requests\StoreKlaseRequest;
 use App\Http\Requests\UpdateKlaseRequest;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Facades\Log;
+
 
 class KlaseController extends Controller
 {
     /**
      * Display a listing of the resource.
      */
-    public function index()
-    {
+    public function index(){
         $classes = Klase::all();
         return $classes;
     }
@@ -29,7 +32,9 @@ class KlaseController extends Controller
             "email"=>"required|email|exists:admins",
             "password"=>"required"
         ]);
-        $admin = Admin::where('email',$request->email)->first();
+        $admin = Admin::where('email',$request->email)
+            ->where('role', '=', 'Teacher')
+            ->first();
         if(!$admin|| !Hash::check($request->password,$admin->password)){
             return [
                 "message"=>"The provider credentials are incorrect"
@@ -55,164 +60,240 @@ class KlaseController extends Controller
         // return 'logout';
     }
 
-    public function UserDetails($id){
-        $user = Admin::where('admin_id',$id)
-                        ->first();
-        return $user;
-    }
-
-    public function store(Request $request){
-        $validatedData = $request->validate([
-            'admin_id'=> 'required|int|max:4',
-            'subject_id'=> 'required|int|max:4',
-            'section' => 'required|string|max:255',
-            'schedule' => 'required|string|max:255'
-        ]);
-
-        $classes = Klase::create($validatedData);
-        return response()->json($classes, 201);
-    }
-
-    //classes
-    public function getClasses($uid) {
-        // Fetch classes based on the admin_id
-        $classes = DB::table('klases')
-            ->leftJoin('sections', 'klases.section_id', '=', 'sections.section_id')
-            ->leftJoin('subjects', 'sections.grade_level', '=', 'subjects.grade_level')
-            ->where('klases.admin_id', '=', $uid)
-            ->select('klases.*', 'subjects.*', 'sections.*')
-            ->get();
-
-        return response()->json($classes);
-    }
-
+    //home
     public function getClassesToday($uid) {
         // Get today's day (e.g., 'Mon', 'Tue', etc.)
         $today = date('D'); // 'D' gives a three-letter abbreviation (e.g., 'Mon', 'Tue', etc.)
     
-        $classes = DB::table('klases')
-            ->leftJoin('sections', 'klases.section_id', '=', 'sections.section_id')
-            ->leftJoin('subjects', 'sections.grade_level', '=', 'subjects.grade_level')
-            ->select('klases.*', 'subjects.*', 'sections.*')
-            ->where('klases.schedule', 'LIKE', "%$today%") // Filter by today's abbreviated day
-            ->where('klases.admin_id', '=', $uid)
-            ->orderByRaw("STR_TO_DATE(SUBSTRING_INDEX(SUBSTRING_INDEX(klases.schedule, ' ', -1), '-', 1), '%l:%i%p')")
+        $classes = DB::table('classes')
+            ->leftJoin('sections', 'classes.section_id', '=', 'sections.section_id')
+            ->leftJoin('subjects', 'classes.subject_id', '=', 'subjects.subject_id')
+            ->select('classes.*', 'subjects.*', 'sections.*')
+            ->where('classes.schedule', 'LIKE', "%$today%") // Filter by today's abbreviated day
+            ->where('classes.admin_id', '=', $uid)
+            ->orderByRaw("STR_TO_DATE(SUBSTRING_INDEX(SUBSTRING_INDEX(classes.schedule, ' ', -1), '-', 1), '%l:%i%p')")
             ->get();
     
+            foreach ($classes as $class) {
+                // Adjust the path to match your directory structure
+                $class->image = url('assets/subPic/' . $class->image); // Ensure this points to the correct location
+                \Log::info('Image URL: ' . $class->image); // Log for debugging
+            }
+
         return $classes;
     }
+
+    public function getInquiries(Request $request){
+        $uid = $request->input('uid');
+
+        $data = DB::table('messages')
+            ->leftJoin('students', function ($join) {
+                $join->on('messages.message_sender', '=', 'students.LRN');
+            })
+            ->leftJoin('enrollments', function ($join) {
+                $join->on('students.LRN', '=', 'enrollments.LRN');
+            })
+            ->leftJoin('parent_guardians', function ($join) {
+                $join->on('messages.message_sender', '=', 'parent_guardians.guardian_id');
+            })     
+            ->leftJoin('admins', 'messages.message_reciever', '=', 'admins.admin_id')
+            ->whereNotIn('messages.message_sender', function ($query) {
+                $query->select('admin_id')->from('admins');
+            })
+            ->where('messages.message_reciever', '=', $uid)
+            // ->join('admins as sender_admin', 'messages.message_sender', '=', 'sender_admin.admin_id')
+            // ->join('students as reciever', 'messages.message_reciever', '=', 'reciever.LRN')
+            ->select('messages.*', 
+                    DB::raw('CASE 
+                    WHEN messages.message_sender IN (SELECT LRN FROM students) THEN 
+                    CONCAT(students.fname, " ", 
+                        CASE 
+                            WHEN students.mname IS NOT NULL THEN CONCAT(LEFT(students.mname, 1), ". ") 
+                            ELSE "" 
+                        END, 
+                    students.lname)
+                    WHEN messages.message_sender IN (SELECT guardian_id FROM parent_guardians) THEN 
+                        CONCAT(parent_guardians.fname, " ", 
+                            CASE 
+                                WHEN parent_guardians.mname IS NOT NULL THEN CONCAT(LEFT(parent_guardians.mname, 1), ". ") 
+                                ELSE "" 
+                            END, 
+                        parent_guardians.lname)
+                    END as sender_name'),
+                    DB::raw('CONCAT(admins.fname, " ",COALESCE(LEFT(admins.mname, 1),""), ". ", admins.lname)as admin_name'),
+                    DB::raw('CASE 
+                    WHEN messages.message_sender IN (SELECT LRN FROM students) THEN 
+                        CASE 
+                            WHEN enrollments.strand IS NULL THEN enrollments.grade_level 
+                            ELSE CONCAT(enrollments.grade_level, " ", enrollments.strand) 
+                        END
+                    ELSE NULL
+                    END as label')
+                    )
+            ->havingRaw('sender_name IS NOT NULL')
+            ->orderBy('messages.created_at', 'desc')
+            ->get();
     
-    public function getClassInfo($cid){
+        return $data;
+    }
+
+    //classes
+    
+    public function getClasses($uid) {
+        // Fetch classes based on the admin_id
+        $classes = DB::table('classes')
+            ->leftJoin('sections', 'classes.section_id', '=', 'sections.section_id')
+            ->leftJoin('subjects', 'classes.subject_id', '=', 'subjects.subject_id') 
+            ->where('classes.admin_id', '=', $uid)
+            ->select('classes.*', 'sections.*', 'subjects.*', 'subjects.image')
+            ->get();
+    
+        if ($classes->isEmpty()) {
+            return response()->json(['message' => 'No classes found for this admin ID'], 404);
+        }
+    
+        foreach ($classes as $class) {
+            // Adjust the path to match your directory structure
+            $class->image = url('assets/subPic/' . $class->image); // Ensure this points to the correct location
+            \Log::info('Image URL: ' . $class->image); // Log for debugging
+        }
+    
+        return response()->json($classes);
+    }
+
+    public function getClassInfo($cid) {
         $klase = DB::table('rosters')
-        ->join('students', 'rosters.LRN', '=', 'students.LRN')
-        ->leftJoin('parent_guardians', 'rosters.LRN', '=', 'parent_guardians.LRN')
-        ->leftJoin('klases', 'rosters.class_id', '=', 'klases.class_id')
-        ->leftJoin('sections', 'klases.section_id', '=', 'sections.section_id')
-        ->leftJoin('subjects', 'sections.grade_level', '=', 'subjects.grade_level')
-        // ->leftJoin('grades', 'rosters.LRN', '=', 'grades.LRN')
-        ->where('rosters.class_id', '=', $cid)
-        ->select(
-            'students.fname as student_fname', 
-            'students.lname as student_lname',  
-            'sections.grade_level as student_gradelvl',
-            'students.contact_no as student_contact_no',
-            'parent_guardians.fname as guardian_fname', 
-            'parent_guardians.lname as guardian_lname', 
-            'students.gender',
-            'students.*',
-            'sections.*', 
-            'klases.*', 
-            'subjects.*',
-            'parent_guardians.*'
-            // 'grades.*'
-        )
-        ->orderByRaw("CASE WHEN students.gender = 'Male' THEN 0 ELSE 1 END") // Male first, then female
-        ->orderBy('students.lname')  // Optional: order by last name for further sorting
-        ->get();
-        
-        return response()->json($klase);
+            ->join('students', 'rosters.LRN', '=', 'students.LRN')
+            ->leftJoin('parent_guardians', 'rosters.LRN', '=', 'parent_guardians.LRN')
+            ->leftJoin('classes', 'rosters.class_id', '=', 'classes.class_id')
+            ->leftJoin('sections', 'classes.section_id', '=', 'sections.section_id')
+            ->leftJoin('subjects', 'classes.subject_id', '=', 'subjects.subject_id')
+            ->leftJoin('enrollments', 'rosters.LRN', '=', 'enrollments.LRN') // Joining enrollments table
+            ->where('rosters.class_id', '=', $cid)
+            ->select(
+                'students.fname as student_fname',
+                'students.lname as student_lname',
+                'sections.grade_level as student_gradelvl',
+                'students.contact_no as student_contact_no',
+                'parent_guardians.fname as guardian_fname',
+                'parent_guardians.lname as guardian_lname',
+                'students.gender',
+                'students.*',
+                'sections.*',
+                'classes.*',
+                'subjects.*',
+                'parent_guardians.*',
+                'enrollments.guardian_name' // Selecting guardian_name from enrollments
+            )
+            ->orderByRaw("CASE WHEN students.gender = 'Male' THEN 0 ELSE 1 END") // Male first, then female
+            ->orderBy('students.lname')  // Optional: order by last name for further sorting
+            ->get();
             
+        return response()->json($klase);
     }
 
     public function getClassGrades($cid){
         $klase = DB::table('rosters')
-        ->join('students', 'rosters.LRN', '=', 'students.LRN')
-        ->leftJoin('grades', 'rosters.LRN', '=', 'grades.LRN')
-        ->where('rosters.class_id', '=', $cid)
-        ->select(
-            'students.LRN',
-            'students.fname as student_fname', 
-            'students.lname as student_lname',  
-            'students.contact_no as student_contact_no', 
-            DB::raw("
-                MAX(CASE WHEN grades.term = 'First Quarter' THEN grades.grade ELSE NULL END) as grade_Q1,
-                MAX(CASE WHEN grades.term = 'First Quarter' THEN grades.permission ELSE NULL END) AS permission_Q1,
-                MAX(CASE WHEN grades.term = 'Second Quarter' THEN grades.grade ELSE NULL END) as grade_Q2,
-                MAX(CASE WHEN grades.term = 'Second Quarter' THEN grades.permission ELSE NULL END) AS permission_Q2,
-                MAX(CASE WHEN grades.term = 'Third Quarter' THEN grades.grade ELSE NULL END) as grade_Q3,
-                MAX(CASE WHEN grades.term = 'Third Quarter' THEN grades.permission ELSE NULL END) AS permission_Q3,
-                MAX(CASE WHEN grades.term = 'Fourth Quarter' THEN grades.grade ELSE NULL END) as grade_Q4,
-                MAX(CASE WHEN grades.term = 'Fourth Quarter' THEN grades.permission ELSE NULL END) AS permission_Q4,
-                MAX(CASE WHEN grades.term = 'Midterm' THEN grades.grade ELSE NULL END) as grade_midterm,
-                MAX(CASE WHEN grades.term = 'Midterm' THEN grades.permission ELSE NULL END) AS permission_midterm,
-                MAX(CASE WHEN grades.term = 'Final' THEN grades.grade ELSE NULL END) as grade_final,
-                MAX(CASE WHEN grades.term = 'Final' THEN grades.permission ELSE NULL END) AS permission_final
-            ")
-        )
-        ->groupBy('students.LRN', 'students.fname', 'students.lname', 'students.contact_no')
-        ->orderByRaw("CASE WHEN students.gender = 'Male' THEN 0 ELSE 1 END") // Male first, then female
-        ->orderBy('students.lname')  // Optional: order by last name for further sorting
-        ->get();
+            ->join('students', 'rosters.LRN', '=', 'students.LRN')
+            ->leftJoin('grades', function ($join) use ($cid) {
+                $join->on('rosters.LRN', '=', 'grades.LRN')
+                    ->where('grades.class_id', '=', $cid);
+            })
+            ->where('rosters.class_id', '=', $cid) // Filter students by class_id
+            ->select(
+                'students.LRN',
+                'students.fname as student_fname', 
+                'students.lname as student_lname',  
+                'students.contact_no as student_contact_no', 
+                DB::raw("
+                    MAX(CASE WHEN grades.term = 'First Quarter' THEN grades.grade ELSE NULL END) as grade_Q1,
+                    MAX(CASE WHEN grades.term = 'First Quarter' THEN grades.permission ELSE NULL END) AS permission_Q1,
+                    MAX(CASE WHEN grades.term = 'Second Quarter' THEN grades.grade ELSE NULL END) as grade_Q2,
+                    MAX(CASE WHEN grades.term = 'Second Quarter' THEN grades.permission ELSE NULL END) AS permission_Q2,
+                    MAX(CASE WHEN grades.term = 'Third Quarter' THEN grades.grade ELSE NULL END) as grade_Q3,
+                    MAX(CASE WHEN grades.term = 'Third Quarter' THEN grades.permission ELSE NULL END) AS permission_Q3,
+                    MAX(CASE WHEN grades.term = 'Fourth Quarter' THEN grades.grade ELSE NULL END) as grade_Q4,
+                    MAX(CASE WHEN grades.term = 'Fourth Quarter' THEN grades.permission ELSE NULL END) AS permission_Q4,
+                    MAX(CASE WHEN grades.term = 'Midterm' THEN grades.grade ELSE NULL END) as grade_midterm,
+                    MAX(CASE WHEN grades.term = 'Midterm' THEN grades.permission ELSE NULL END) AS permission_midterm,
+                    MAX(CASE WHEN grades.term = 'Final' THEN grades.grade ELSE NULL END) as grade_final,
+                    MAX(CASE WHEN grades.term = 'Final' THEN grades.permission ELSE NULL END) AS permission_final
+                ")
+            )
+            ->groupBy('students.LRN', 'students.fname', 'students.lname', 'students.contact_no')
+            ->orderByRaw("CASE WHEN students.gender = 'Male' THEN 0 ELSE 1 END") // Male first, then female
+            ->orderBy('students.lname') // Optional: order by last name for further sorting
+            ->get();
 
         return response()->json($klase);
-            
     }
 
-    public function updateClassGrades(Request $request, $cid){
-        
-        $validatedData = $request->validate([
-            'grades' => 'required|array',
-            'grades.*.LRN' => 'required|string',
-            'grades.*.term' => 'required|string|in:First Quarter,Second Quarter,Third Quarter,Fourth Quarter,Midterm,Final',
-            'grades.*.grade' => 'required|numeric',
-        ]);
-
+    public function updateClassGrades(Request $request, $cid) {
         // Initialize an array to collect results
         $results = [];
-
+    
         // Iterate through each grade entry
-        foreach ($validatedData['grades'] as $gradeData) {
+        foreach ($request->grades as $gradeData) {
+            // Determine if the grade already exists (i.e., it's an update)
+            $existingGrade = DB::table('grades')
+                ->where('LRN', $gradeData['LRN'])
+                ->where('term', $gradeData['term'])
+                ->where('class_id', $cid)
+                ->first();
+    
+            // If it doesn't exist, we treat it as an insert
+            if (!$existingGrade) {
+                // Validate for insert: grade must be between 60 and 100
+                $validatedData = $request->validate([
+                    'grades.*.LRN' => 'required|string',
+                    'grades.*.term' => 'required|string|in:First Quarter,Second Quarter,Third Quarter,Fourth Quarter,Midterm,Final',
+                    'grades.*.grade' => 'required|numeric|between:60,99', // Apply grade validation for insert
+                    'grades.*.permission' => 'nullable|string|in:none,pending',
+                ]);
+            } else {
+                $validatedData = $request->validate([
+                    'grades.*.LRN' => 'required|string',
+                    'grades.*.term' => 'required|string|in:First Quarter,Second Quarter,Third Quarter,Fourth Quarter,Midterm,Final',
+                    'grades.*.grade' => 'required|numeric|between:60,99',
+                    'grades.*.permission' => 'nullable|string|in:none,pending',
+                ]);
+            }
+    
+            // Default permission is 'none' if not provided
+            $permission = $gradeData['permission'] ?? (strlen((string) $gradeData['grade']) === 2 ? 'none' : 'pending');
+    
             // Use updateOrInsert to either update an existing record or insert a new one
             $result = DB::table('grades')
                 ->updateOrInsert(
-                [
-                    'LRN' => $gradeData['LRN'],
-                    'term' => $gradeData['term'],
-                    'class_id' => $cid // Use $cid as the class_id
-                ],
-                [
-                    'grade' => $gradeData['grade'],
-                    // 'updated_at' => now(), // Optionally set the updated_at timestamp
-                ]
-            );
-
+                    [
+                        'LRN' => $gradeData['LRN'],
+                        'term' => $gradeData['term'],
+                        'class_id' => $cid // Use $cid as the class_id
+                    ],
+                    [
+                        'grade' => $gradeData['grade'], // Save the new grade
+                        'permission' => $permission, // Set permission based on request or default logic
+                        'updated_at' => now(), // Optionally set the updated_at timestamp
+                    ]
+                );
+    
             // Collect the result
             $results[] = [
                 'LRN' => $gradeData['LRN'],
                 'term' => $gradeData['term'],
-                'grade' => $gradeData['grade'],
+                'grade' => $gradeData['grade'], // Include the saved grade
+                'permission' => $permission, // Include the updated permission
                 'operation' => $result ? 'updated' : 'inserted', // Indicate if it was updated or inserted
             ];
         }
-
+    
         // Return a JSON response with the operation results
         return response()->json([
-            'message' => 'Grades updated successfully',
+            'message' => 'Grades and permissions updated successfully',
             'results' => $results,
         ]);
-
     }
-
+    
     public function getClassAttendance($cid){
         // Build the attendance query to get unique dates for the specified class
         $attendanceDates = DB::table('attendances')
@@ -235,6 +316,8 @@ class KlaseController extends Controller
                 'attendances.date',
                 'attendances.status'
             )
+            ->orderByRaw("CASE WHEN students.gender = 'Male' THEN 0 ELSE 1 END") // Male first, then female
+            ->orderBy('students.lname')  // Optional: order by last name for further sorting
             ->get();
 
         // Transforming the data into the desired format
@@ -386,9 +469,7 @@ class KlaseController extends Controller
     }
 
     //announcements
-
-    public function getClassAnnouncements($cid)
-    {
+    public function getClassAnnouncements($cid){
         $announcements = DB::table('announcements')
         ->where('announcements.class_id', '=', $cid)
         ->select('announcements.*')
@@ -396,5 +477,378 @@ class KlaseController extends Controller
 
         return response()->json($announcements);
     }
+
+    public function postAnnouncements(Request $request){
+        $validatedData = $request->validate([
+            'title' => 'required|string|max:255',
+            'announcement' => 'required|string|max:5000',
+            'admin_id' => 'required|exists:admins,admin_id',
+            'class_id' => 'required|exists:classes,class_id',
+        ]);
+
+        $announcement = Announcement::create($validatedData);
+        return response()->json($announcement, 201);
+    }
+
+    public function destroyAnnouncements($ancmnt_id){
+        try {
+            $announcement = Announcement::find($ancmnt_id);
+
+            if ($announcement) {
+                $announcement->delete();
+                return response()->json(['message' => 'Deleted successfully!'], 200);
+            }
+
+            return response()->json(['message' => 'Announcement not found.'], 404);
+        } catch (\Exception $e) {
+            return response()->json(['message' => 'Error deleting announcement: ' . $e->getMessage()], 500);
+        }
+    }
+
+    // message
+    // public function getStudentParents() {
+    //     // Fetch students
+    //     $students = DB::table('students')
+    //         ->select('students.LRN', DB::raw('CONCAT(students.fname, " ", LEFT(students.mname, 1), ". ", students.lname) as account_name'))
+    //         ->get()
+    //         ->map(function ($student) {
+    //             return [
+    //                 'account_id' => $student->LRN,
+    //                 'account_name' => $student->account_name,
+    //                 'type' => 'student',
+    //             ];
+    //         });
+    
+    //     // Fetch distinct parents by email while retaining the original selection
+    //     $parents = DB::table('parent_guardians')
+    //         ->select('parent_guardians.guardian_id', DB::raw('CONCAT(parent_guardians.fname, " ", LEFT(parent_guardians.mname, 1), ". ", parent_guardians.lname) as account_name'))
+    //         ->whereIn('guardian_id', function($query) {
+    //             $query->select(DB::raw('MIN(guardian_id)')) // Get the first guardian_id for each email
+    //                   ->from('parent_guardians')
+    //                   ->groupBy('email'); // Group by email to ensure distinct entries
+    //         })
+    //         ->get()
+    //         ->map(function ($parent) {
+    //             return [
+    //                 'account_id' => $parent->guardian_id,
+    //                 'account_name' => $parent->account_name,
+    //                 'type' => 'parent',
+    //             ];
+    //         });
+    
+    //     // Combine both collections into one
+    //     $accounts = $students->merge($parents);
+    
+    //     return response()->json($accounts);
+    // }
+
+    public function getStudentParents() {
+        // Fetch students
+        $students = DB::table('students')
+        ->select('students.LRN', DB::raw("
+        CONCAT(
+            students.fname, 
+            ' ', 
+            CASE 
+                WHEN students.mname IS NOT NULL AND students.mname != '' THEN CONCAT(LEFT(students.mname, 1), '. ')
+                ELSE ''
+            END,
+            students.lname
+            ) as account_name
+            "))
+            ->get()
+            ->map(function ($student) {
+                return [
+                    'account_id' => $student->LRN,
+                    'account_name' => $student->account_name,
+                    'type' => 'student',
+                ];
+            });
+    
+        // Fetch distinct parents by email while retaining the original selection
+        $parents = DB::table('parent_guardians')
+            ->select('parent_guardians.guardian_id', DB::raw('CONCAT(parent_guardians.fname, " ", LEFT(COALESCE(parent_guardians.mname, ""), 1), ". ", parent_guardians.lname) as account_name'))
+            ->whereIn('guardian_id', function($query) {
+                $query->select(DB::raw('MIN(guardian_id)')) // Get the first guardian_id for each email
+                      ->from('parent_guardians')
+                      ->groupBy('email'); // Group by email to ensure distinct entries
+            })
+            ->get()
+            ->map(function ($parent) {
+                return [
+                    'account_id' => $parent->guardian_id,
+                    'account_name' => $parent->account_name,
+                    'type' => 'parent',
+                ];
+            });
+    
+        // Combine both collections into one
+        $accounts = $students->merge($parents);
+    
+        return response()->json($accounts);
+    }
+
+    public function getMessages(Request $request) {
+        $uid = $request->input('uid');
+    
+        // Main query to get messages for the entire conversation
+        $msg = DB::table('messages')
+            ->leftJoin('students', function ($join) {
+                $join->on('messages.message_sender', '=', 'students.LRN');
+            })
+            ->leftJoin('admins', function ($join) {
+                $join->on('messages.message_sender', '=', 'admins.admin_id');
+            })
+            ->leftJoin('parent_guardians', function ($join) {
+                $join->on('messages.message_sender', '=', 'parent_guardians.guardian_id');
+            })
+            ->leftJoin('students as receiver_students', function ($join) {
+                $join->on('messages.message_reciever', '=', 'receiver_students.LRN');
+            })
+            ->leftJoin('admins as receiver_admins', function ($join) {
+                $join->on('messages.message_reciever', '=', 'receiver_admins.admin_id');
+            })
+            ->leftJoin('parent_guardians as receiver_guardians', function ($join) {
+                $join->on('messages.message_reciever', '=', 'receiver_guardians.guardian_id');
+            })
+            ->where(function($query) use ($uid) {
+                $query->where('messages.message_sender', '=', $uid) // Messages sent by the user
+                      ->orWhere('messages.message_reciever', '=', $uid); // Messages received by the user
+            })
+            ->select('messages.*', 
+                DB::raw('CASE 
+                        WHEN messages.message_sender IN (SELECT LRN FROM students) THEN 
+                            CONCAT(students.fname, 
+                                IFNULL(CONCAT(" ", LEFT(students.mname, 1), "."), ""), 
+                                " ", 
+                                students.lname)
+                        WHEN messages.message_sender IN (SELECT admin_id FROM admins) THEN 
+                            CONCAT(receiver_students.fname, 
+                                IFNULL(CONCAT(" ", LEFT(receiver_students.mname, 1), "."), ""), 
+                                " ", 
+                                receiver_students.lname)
+                        WHEN messages.message_sender IN (SELECT guardian_id FROM parent_guardians) THEN 
+                            CONCAT(parent_guardians.fname, 
+                                IFNULL(CONCAT(" ", LEFT(parent_guardians.mname, 1), "."), ""), 
+                                " ", 
+                                parent_guardians.lname)
+                    END as sender_name'))
+            ->havingRaw('sender_name IS NOT NULL')
+            ->orderBy('messages.created_at', 'desc')
+            ->get();
+        
+        return $msg;
+    }
+
+    public function getConvo(Request $request, $sid) {
+        // Initialize the response variable
+        $user = null;
+    
+        // Check if the $sid corresponds to a student
+        $student = DB::table('students')
+            ->where('students.LRN', $sid)
+            ->select('students.LRN', DB::raw("
+            CONCAT(
+                students.fname, 
+                ' ', 
+                CASE 
+                    WHEN students.mname IS NOT NULL AND students.mname != '' THEN CONCAT(LEFT(students.mname, 1), '. ')
+                    ELSE ''
+                END,
+                students.lname
+                ) as account_name
+                "))
+            ->first(); // Use first() to get a single record
+    
+        if ($student) {
+            // If a student is found, format the response
+            $user = [
+                'account_id' => $student->LRN,
+                'account_name' => $student->account_name,
+                'type' => 'student',
+            ];
+        } else {
+            // If no student found, check for a parent
+            $parent = DB::table('parent_guardians')
+                ->where('parent_guardians.guardian_id', $sid)
+                ->select('parent_guardians.guardian_id', DB::raw('CONCAT(parent_guardians.fname, " ",  LEFT(COALESCE(parent_guardians.mname, ""), 1), ". ", parent_guardians.lname) as account_name'))
+                ->first(); // Use first() to get a single record
+    
+            if ($parent) {
+                // If a parent is found, format the response
+                $user = [
+                    'account_id' => $parent->guardian_id,
+                    'account_name' => $parent->account_name,
+                    'type' => 'parent',
+                ];
+            }
+        }
+    
+        // Initialize the conversation variable
+        $convo = [];
+    
+        // If user is found, fetch the conversation
+        if ($user) {
+            $uid = $request->input('uid');
+    
+            $convo = DB::table('messages')
+            ->leftJoin('students', 'messages.message_sender', '=', 'students.LRN')
+            ->leftJoin('admins', 'messages.message_sender', '=', 'admins.admin_id')
+            ->leftJoin('parent_guardians', 'messages.message_sender', '=', 'parent_guardians.guardian_id')
+            ->where(function ($query) use ($uid) {
+                $query->where('messages.message_sender', $uid)
+                    ->orWhere('messages.message_reciever', $uid);
+            })
+            ->where(function ($query) use ($sid) {
+                $query->where('messages.message_sender', $sid)
+                    ->orWhere('messages.message_reciever', $sid);
+            })
+            ->selectRaw("
+            messages.*,
+            CASE 
+                WHEN messages.message_sender = ? THEN 'me' 
+                ELSE NULL 
+            END as me,
+            CASE 
+                WHEN messages.message_sender IN (SELECT LRN FROM students) THEN 
+                    CONCAT(
+                        students.fname, ' ', 
+                        CASE 
+                            WHEN students.mname IS NOT NULL AND students.mname != '' THEN CONCAT(LEFT(students.mname, 1), '. ')
+                            ELSE ''
+                        END,
+                        students.lname
+                    )
+                WHEN messages.message_sender IN (SELECT guardian_id FROM parent_guardians) THEN 
+                    CONCAT(
+                        parent_guardians.fname, ' ', 
+                        CASE 
+                            WHEN parent_guardians.mname IS NOT NULL AND parent_guardians.mname != '' THEN CONCAT(LEFT(parent_guardians.mname, 1), '. ')
+                            ELSE ''
+                        END,
+                        parent_guardians.lname
+                    )
+                ELSE NULL 
+            END as sender_name
+        ", [$uid])
+        ->get();
+
+        }
+    
+        // Return the user information and conversation or a not found message
+        return response()->json([
+            'user' => $user ?: ['message' => 'User  not found'],
+            'conversation' => $convo,
+        ]);
+    }
+
+    public function sendMessage(Request $request){
+        $validator = Validator::make($request->all(), [
+            'message_sender' => 'required',
+            'message_reciever' => 'required',
+            'message' => 'required|string|max:5000',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json($validator->errors(), 422);
+        }
+
+        $message = Message::create([
+            'message_sender' => $request->input('message_sender'), // Ensure the key matches your database column
+            'message_reciever' => $request->input('message_reciever'), // Ensure the key matches your database column
+            'message' => $request->input('message'), // Ensure the key matches your database column
+            'message_date' => now(),
+        ]);
+
+        return response()->json($message, 201);
+    }
+
+    public function getrecepeints(Request $request){
+        $students = DB::table('students')
+        ->select(DB::raw('LRN AS receiver_id, CONCAT(fname, " ", lname) AS receiver_name'));
+        $guardians = DB::table('parent_guardians')
+            ->select(DB::raw('guardian_id AS receiver_id, CONCAT(fname, " ", lname) AS receiver_name'));
+        $admins = DB::table('admins')
+            ->select(DB::raw('admin_id AS receiver_id, CONCAT(fname, " ", lname) AS receiver_name'));
+        $recipients = $students->unionAll($guardians)->unionAll($admins)->get();
+        return response()->json($recipients);
+    }
+
+    public function composenewmessage(Request $request){
+        // Validate the incoming request data
+        $validated = $request->validate([
+            'message' => 'required|string|max:5000',
+            'message_date' => 'required|date',
+            'message_sender' => [
+                'required',
+                function ($attribute, $value, $fail) {
+                    $existsInStudents = DB::table('students')->where('LRN', $value)->exists();
+                    $existsInGuardians = DB::table('parent_guardians')->where('guardian_id', $value)->exists();
+                    $existsInAdmins = DB::table('admins')->where('admin_id', $value)->exists();
+    
+                    if (!$existsInStudents && !$existsInGuardians && !$existsInAdmins) {
+                        $fail("The selected $attribute is invalid.");
+                    }
+                },
+            ],
+            'message_reciever' => [
+                'required',
+                function ($attribute, $value, $fail) {
+                    $existsInStudents = DB::table('students')->where('LRN', $value)->exists();
+                    $existsInGuardians = DB::table('parent_guardians')->where('guardian_id', $value)->exists();
+                    $existsInAdmins = DB::table('admins')->where('admin_id', $value)->exists();
+    
+                    if (!$existsInStudents && !$existsInGuardians && !$existsInAdmins) {
+                        $fail("The selected $attribute is invalid.");
+                    }
+                },
+            ],
+        ]);
+    
+        try {
+            // Create a new message
+            $message = new Message();
+            $message->message_sender = $validated['message_sender'];
+            $message->message_reciever = $validated['message_reciever'];
+            $message->message = $validated['message'];
+            $message->message_date = $validated['message_date'];
+            $message->save();
+    
+            // Log a success message
+            Log::info('Message successfully composed', [
+                'message_id' => $message->message_id,
+                'sender' => $validated['message_sender'],
+                'receiver' => $validated['message_reciever'],
+                'message_content' => $validated['message'],
+                'message_date' => $validated['message_date'],
+            ]);
+    
+            // Return the updated list of messages
+            return $this->getMessages($request);  // Call getMessages method to return updated conversation
+        } catch (\Exception $e) {
+            // Log any error that occurs
+            Log::error('Error sending message: ' . $e->getMessage());
+    
+            // Return an error response
+            return response()->json(['error' => 'Failed to send message'], 500);
+        }
+    }
+
+    public function updateGradePermission(Request $request){
+        $student = Student::where('LRN', $request->LRN)->first();
+
+        if (!$student) {
+            return response()->json(['message' => 'Student not found'], 404);
+        }
+
+        // Update the permission based on the term
+        $permissionField = 'permission_' . str_replace(' ', '_', strtolower($request->term));
+        $student->$permissionField = $request->permission;
+        $student->save();
+
+        return response()->json(['message' => 'Permission updated successfully']);
+    }
+
+
 
 }

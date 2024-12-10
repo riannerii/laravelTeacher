@@ -16,11 +16,13 @@ Route::apiResource('admins', AdminController::class);
 Route::apiResource('announcements', AnnouncementController::class);
 Route::apiResource('subjects', SubjectController::class);
 Route::apiResource('students', StudentController::class);
-// Route::apiResource('klases', KlaseController::class);
+
 
 Route::post('/login', [KlaseController::class, 'login']);
 
-// Route::get('/getclasses', [KlaseController::class, 'getclasses']);
+Route::get('/getInquiries', [KlaseController::class, 'getInquiries']);
+
+
 Route::get('/getclasses/{uid}', [KlaseController::class, 'getClasses']);
 Route::get('/getClassesToday/{uid}', [KlaseController::class, 'getClassesToday']);
 Route::get('/getClassInfo/{cid}', [KlaseController::class, 'getClassInfo']);
@@ -44,19 +46,20 @@ Route::put('/update-password', [KlaseController::class, 'updatePass']);
     });
 
 Route::get('/getClassAnnouncements/{cid}', [KlaseController::class, 'getClassAnnouncements']);
+Route::post('/postAnnouncements',[KlaseController::class,'postAnnouncements']);
+Route::delete('destroyannouncements/{ancmnt_id}', [KlaseController::class, 'destroyAnnouncements']);
+
+// Message 
+Route::get('/getStudentParents', [KlaseController::class, 'getStudentParents']);
+Route::get('/getMessages', [KlaseController::class, 'getMessages']);
+Route::get('/getConvo/{sid}', [KlaseController::class, 'getConvo']);
+Route::post('/sendMessage', [KlaseController::class, 'sendMessage']);
+Route::get('/getrecepeints', [KlaseController::class, 'getrecepeints']);
+Route::post('/composemessage', [KlaseController::class, 'composenewmessage']);
+
+Route::post('/update-grade-permission', [KlaseController::class, 'updateGradePermission']);
 
 
-
-    // Announcement
-// Route::get('announcements',[KlaseController::class,'getAnnouncements']);
-// Route::get('/announcements/{announcement}', [KlaseController::class, 'showtoupdate']);
-// Route::post('/postAnnouncements',[KlaseController::class,'postAnnouncements']);
-// Route::put('/updateAnnouncements/{announcement}', [KlaseController::class, 'updateAnnouncements']);
-// Route::delete('destroyannouncements/{announcement_id}', [KlaseController::class, 'destroyAnnouncements']);
- 
-
-
-// Route::post('/submit-grades/{cid}', [KlaseController::class, 'updateClassGrades']);
 
 
 
