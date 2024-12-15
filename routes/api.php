@@ -57,6 +57,9 @@ Route::post('/sendMessage', [KlaseController::class, 'sendMessage']);
 Route::get('/getrecepeints', [KlaseController::class, 'getrecepeints']);
 Route::post('/composemessage', [KlaseController::class, 'composenewmessage']);
 
+Route::post('/markAsRead', [KlaseController::class, 'markAsRead']);
+Route::get('/getUnreadCount', [KlaseController::class, 'getUnreadCount']);
+
 Route::post('/update-grade-permission', [KlaseController::class, 'updateGradePermission']);
 
 

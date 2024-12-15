@@ -183,7 +183,8 @@ class KlaseController extends Controller
                 'classes.*',
                 'subjects.*',
                 'parent_guardians.*',
-                'enrollments.guardian_name' // Selecting guardian_name from enrollments
+                'enrollments.guardian_name',
+                'enrollments.guardian_no' 
             )
             ->orderByRaw("CASE WHEN students.gender = 'Male' THEN 0 ELSE 1 END") // Male first, then female
             ->orderBy('students.lname')  // Optional: order by last name for further sorting
@@ -505,43 +506,6 @@ class KlaseController extends Controller
         }
     }
 
-    // message
-    // public function getStudentParents() {
-    //     // Fetch students
-    //     $students = DB::table('students')
-    //         ->select('students.LRN', DB::raw('CONCAT(students.fname, " ", LEFT(students.mname, 1), ". ", students.lname) as account_name'))
-    //         ->get()
-    //         ->map(function ($student) {
-    //             return [
-    //                 'account_id' => $student->LRN,
-    //                 'account_name' => $student->account_name,
-    //                 'type' => 'student',
-    //             ];
-    //         });
-    
-    //     // Fetch distinct parents by email while retaining the original selection
-    //     $parents = DB::table('parent_guardians')
-    //         ->select('parent_guardians.guardian_id', DB::raw('CONCAT(parent_guardians.fname, " ", LEFT(parent_guardians.mname, 1), ". ", parent_guardians.lname) as account_name'))
-    //         ->whereIn('guardian_id', function($query) {
-    //             $query->select(DB::raw('MIN(guardian_id)')) // Get the first guardian_id for each email
-    //                   ->from('parent_guardians')
-    //                   ->groupBy('email'); // Group by email to ensure distinct entries
-    //         })
-    //         ->get()
-    //         ->map(function ($parent) {
-    //             return [
-    //                 'account_id' => $parent->guardian_id,
-    //                 'account_name' => $parent->account_name,
-    //                 'type' => 'parent',
-    //             ];
-    //         });
-    
-    //     // Combine both collections into one
-    //     $accounts = $students->merge($parents);
-    
-    //     return response()->json($accounts);
-    // }
-
     public function getStudentParents() {
         // Fetch students
         $students = DB::table('students')
@@ -632,12 +596,41 @@ class KlaseController extends Controller
                                 IFNULL(CONCAT(" ", LEFT(parent_guardians.mname, 1), "."), ""), 
                                 " ", 
                                 parent_guardians.lname)
-                    END as sender_name'))
+                    END as sender_name'),
+                    DB::raw('IF(messages.read_at IS NULL, 0, 1) as is_read')
+                    )
             ->havingRaw('sender_name IS NOT NULL')
             ->orderBy('messages.created_at', 'desc')
             ->get();
-        
         return $msg;
+    }
+
+    public function markAsRead(Request $request) {
+        $sid = $request->input('sid'); // The ID of the user whose messages are being marked as read
+
+        // Update the read_at timestamp for all messages involving the user
+        $read = DB::table('messages')
+            ->where(function($query) use ($sid) {
+                $query->where('messages.message_sender', '=', $sid) // Messages sent by the user
+                      ->orWhere('messages.message_reciever', '=', $sid); // Messages received by the user
+            })
+            ->update(['read_at' => now()]); // Set the read_at timestamp to the current time
+    
+        return response()->json(['success' => true, 'updated_count' => $read]);
+    }
+
+    public function getUnreadCount(Request $request)
+    {
+        $uid = $request->input('uid'); // Get the user ID from the request
+
+        // Count unread messages for the user
+        $unreadCount = DB::table('messages')
+            ->where('message_reciever', $uid)
+            ->where('read_at', null)
+            ->count();
+
+        // return response()->json(['unread_count' => $unreadCount]);
+        return $unreadCount;
     }
 
     public function getConvo(Request $request, $sid) {
